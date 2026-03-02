@@ -272,11 +272,35 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<bool> {
     }
 }
 
+fn print_help(program: &str) {
+    println!(
+        "\
+histoscript — turn shell history into a script
+
+Browse your shell history in an interactive TUI, select the commands
+you want, and save them as an executable shell script with the correct
+shebang line. Supports bash, zsh, and fish.
+
+USAGE:
+    {program} <output-script>
+
+ARGS:
+    <output-script>    Path for the generated shell script"
+    );
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        eprintln!("Usage: {} <output-script>", args[0]);
-        process::exit(1);
+    if args.len() < 2
+        || args[1] == "-h"
+        || args[1] == "--help"
+    {
+        print_help(&args[0]);
+        process::exit(if args.len() < 2 { 1 } else { 0 });
+    }
+    if args[1] == "-V" || args[1] == "--version" {
+        println!("histoscript {}", env!("CARGO_PKG_VERSION"));
+        process::exit(0);
     }
     let output_path = &args[1];
 
