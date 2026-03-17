@@ -53,25 +53,28 @@ fn parse_history_lines(history: &str, shell: &str) -> Vec<String> {
         if trimmed.is_empty() {
             continue;
         }
-        if shell == "zsh" {
-            // Zsh extended history format: ": timestamp:0;command"
-            if let Some(rest) = trimmed.strip_prefix(": ") {
-                if let Some(idx) = rest.find(';') {
-                    lines.push(rest[idx + 1..].to_string());
+        match shell {
+            "zsh" => {
+                // Zsh extended history format: ": timestamp:0;command"
+                if let Some(rest) = trimmed.strip_prefix(": ") {
+                    if let Some(idx) = rest.find(';') {
+                        lines.push(rest[idx + 1..].to_string());
+                        continue;
+                    }
+                }
+            }
+            "fish" => {
+                // Fish history format: "- cmd: command" entries
+                if let Some(cmd) = trimmed.strip_prefix("- cmd: ") {
+                    lines.push(cmd.to_string());
+                    continue;
+                }
+                // Skip other fish history metadata lines (when:, paths:, etc.)
+                if trimmed.starts_with("when: ") || trimmed.starts_with("paths:") || trimmed.starts_with("- ") {
                     continue;
                 }
             }
-        }
-        if shell == "fish" {
-            // Fish history format: "- cmd: command" entries
-            if let Some(cmd) = trimmed.strip_prefix("- cmd: ") {
-                lines.push(cmd.to_string());
-                continue;
-            }
-            // Skip other fish history metadata lines (when:, paths:, etc.)
-            if trimmed.starts_with("when: ") || trimmed.starts_with("paths:") || trimmed.starts_with("- ") {
-                continue;
-            }
+            _ => {}
         }
         lines.push(trimmed.to_string());
     }
