@@ -37,19 +37,17 @@ PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND; }history -a"
 ```
 
 ### zsh 
-Zsh provides a built-in option for this. Add one of the following to your ~/.zshrc:
+Zsh provides a built-in option for this. Add the following to your ~/.zshrc:
 ```zsh
-# Append to the history file after every command (recommended)
-setopt INC_APPEND_HISTORY
-
-# OR: share history across all open terminal sessions in real time
+# Location of history file
+HISTFILE=~/.zsh_history
+# Maximum lines kept in memory
+export HISTSIZE=100000
+# Maximum lines saved to $HISTFILE
+export SAVEHIST=100000
+# Like INC_APPEND_HISTORY + re-read history whenever accessing it
 setopt SHARE_HISTORY
 ```
-
-`INC_APPEND_HISTORY` writes each command to disk as it runs, keeping history in chronological order.
-`SHARE_HISTORY` goes further — it also re-reads the history file before each prompt, so all open terminal windows see each other's history live.
-
-For the purposes of this program, either option works. `INC_APPEND_HISTORY` is the less intrusive choice if you don't want sessions to share history interactively.
 
 ### fish 
 
