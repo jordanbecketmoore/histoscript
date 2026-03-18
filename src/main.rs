@@ -104,6 +104,9 @@ struct App {
     selected: Vec<bool>,
     cursor: usize,
     scroll_offset: usize,
+    // When Some(anchor), the app is in block-select mode. The highlighted
+    // region is the inclusive range between anchor and cursor.
+    block_anchor: Option<usize>,
 }
 
 impl App {
@@ -114,6 +117,7 @@ impl App {
             selected: vec![false; len],
             cursor: if len > 0 { len - 1 } else { 0 },
             scroll_offset: 0,
+            block_anchor: None,
             lines,
         }
     }
@@ -134,6 +138,24 @@ impl App {
         if !self.lines.is_empty() {
             self.selected[self.cursor] = !self.selected[self.cursor];
         }
+    }
+
+    // Marks all lines in the block-select range as selected, then exits block-select mode.
+    fn select_block(&mut self) {
+        if let Some(anchor) = self.block_anchor.take() {
+            let lo = anchor.min(self.cursor);
+            let hi = anchor.max(self.cursor);
+            for i in lo..=hi {
+                self.selected[i] = true;
+            }
+        }
+    }
+
+    // Returns the block-select range [lo, hi] if active, or None.
+    fn block_range(&self) -> Option<(usize, usize)> {
+        self.block_anchor.map(|anchor| {
+            (anchor.min(self.cursor), anchor.max(self.cursor))
+        })
     }
 
     fn page_up(&mut self, page_size: usize) {
@@ -205,17 +227,31 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, execute_mode: bool) -> io:
             app.ensure_cursor_visible(inner_height);
 
             // Build the visible slice of lines as styled ratatui spans.
+            let block_range = app.block_range();
             let visible_lines: Vec<Line> = (app.scroll_offset
                 ..app.lines.len().min(app.scroll_offset + inner_height))
                 .map(|i| {
                     let checkbox = if app.selected[i] { "[x] " } else { "[ ] " };
                     let is_cursor = i == app.cursor;
+                    let in_block = block_range.map_or(false, |(lo, hi)| i >= lo && i <= hi);
 
-                    // Cursor + selected: dark background, green, bold.
-                    // Cursor only: dark background, bold.
-                    // Selected only: green.
-                    // Neither: default.
-                    let style = if is_cursor && app.selected[i] {
+                    // Style priority (highest to lowest):
+                    //   block-select range + cursor: cyan bg, bold
+                    //   block-select range only:      cyan bg
+                    //   cursor + selected:            dark-gray bg, green, bold
+                    //   cursor only:                  dark-gray bg, bold
+                    //   selected only:                green
+                    //   neither:                      default
+                    let style = if in_block && is_cursor {
+                        Style::default()
+                            .bg(Color::Cyan)
+                            .fg(Color::Black)
+                            .add_modifier(Modifier::BOLD)
+                    } else if in_block {
+                        Style::default()
+                            .bg(Color::Cyan)
+                            .fg(Color::Black)
+                    } else if is_cursor && app.selected[i] {
                         Style::default()
                             .bg(Color::DarkGray)
                             .fg(Color::Green)
@@ -238,32 +274,51 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, execute_mode: bool) -> io:
                 .collect();
 
             let selected_count = app.selected.iter().filter(|&&s| s).count();
-            let title = format!(
-                " History ({}/{} selected) ",
-                selected_count,
-                app.lines.len()
-            );
+            let title = if app.block_anchor.is_some() {
+                let (lo, hi) = block_range.unwrap();
+                format!(" History ({}/{} selected) [BLOCK {} lines] ", selected_count, app.lines.len(), hi - lo + 1)
+            } else {
+                format!(" History ({}/{} selected) ", selected_count, app.lines.len())
+            };
             let list_widget = Paragraph::new(visible_lines)
                 .block(Block::default().borders(Borders::ALL).title(title));
 
             frame.render_widget(list_widget, list_area);
 
-            // Status bar: key binding hints, adapts label based on execute_mode.
-            let status = Line::from(vec![
-                Span::styled(
-                    " Space",
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(": toggle  "),
-                Span::styled("Enter", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(if execute_mode { ": run commands  " } else { ": write script  " }),
-                Span::styled("q", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw("/"),
-                Span::styled("Esc", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(": quit  "),
-                Span::styled("j/k", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(": navigate"),
-            ]);
+            // Status bar: key binding hints vary by mode.
+            let status = if app.block_anchor.is_some() {
+                Line::from(vec![
+                    Span::styled(
+                        " Space",
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(": select block  "),
+                    Span::styled("v", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw("/"),
+                    Span::styled("Esc", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(": cancel  "),
+                    Span::styled("j/k", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(": extend"),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::styled(
+                        " Space",
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(": toggle  "),
+                    Span::styled("v", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(": block select  "),
+                    Span::styled("Enter", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(if execute_mode { ": run commands  " } else { ": write script  " }),
+                    Span::styled("q", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw("/"),
+                    Span::styled("Esc", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(": quit  "),
+                    Span::styled("j/k", Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw(": navigate"),
+                ])
+            };
             let status_widget =
                 Paragraph::new(status).style(Style::default().bg(Color::DarkGray));
             frame.render_widget(status_widget, chunks[1]);
@@ -274,10 +329,38 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, execute_mode: bool) -> io:
                 continue;
             }
             match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => return Ok(false),
+                KeyCode::Esc => {
+                    if app.block_anchor.is_some() {
+                        // Cancel block-select without selecting anything.
+                        app.block_anchor = None;
+                    } else {
+                        return Ok(false);
+                    }
+                }
+                KeyCode::Char('q') => {
+                    if app.block_anchor.is_none() {
+                        return Ok(false);
+                    }
+                }
+                KeyCode::Char('v') => {
+                    if app.block_anchor.is_some() {
+                        // Second 'v' cancels block-select.
+                        app.block_anchor = None;
+                    } else {
+                        // Enter block-select mode anchored at the current cursor.
+                        app.block_anchor = Some(app.cursor);
+                    }
+                }
                 KeyCode::Up | KeyCode::Char('k') => app.move_cursor_up(),
                 KeyCode::Down | KeyCode::Char('j') => app.move_cursor_down(),
-                KeyCode::Char(' ') => app.toggle_selection(),
+                KeyCode::Char(' ') => {
+                    if app.block_anchor.is_some() {
+                        // Mark all lines in the block range as selected.
+                        app.select_block();
+                    } else {
+                        app.toggle_selection();
+                    }
+                }
                 KeyCode::Enter => return Ok(true),
                 KeyCode::PageUp => {
                     let size = terminal.size()?;
