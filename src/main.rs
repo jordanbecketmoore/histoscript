@@ -14,6 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::DefaultTerminal;
 
+// Returns the basename of $SHELL (e.g. "bash", "zsh", "fish").
 fn detect_shell() -> String {
     env::var("SHELL")
         .unwrap_or_default()
@@ -23,6 +24,8 @@ fn detect_shell() -> String {
         .to_string()
 }
 
+// Resolves the history file path for the given shell.
+// Respects $HISTFILE for bash/zsh; falls back to well-known defaults.
 fn history_file_path(shell: &str) -> Option<PathBuf> {
     let home = env::var("HOME").ok()?;
     let home = PathBuf::from(home);
@@ -47,6 +50,8 @@ fn history_file_path(shell: &str) -> Option<PathBuf> {
     }
 }
 
+// Parses raw history file contents into a list of command strings,
+// stripping shell-specific metadata (zsh timestamps, fish YAML fields).
 fn parse_history_lines(history: &str, shell: &str) -> Vec<String> {
     let mut lines = Vec::new();
     for line in history.lines() {
@@ -82,6 +87,7 @@ fn parse_history_lines(history: &str, shell: &str) -> Vec<String> {
     lines
 }
 
+// Returns the shebang line for the given shell name.
 fn shebang_for_shell(shell: &str) -> &str {
     match shell {
         "sh" => "#!/bin/sh",
@@ -91,6 +97,8 @@ fn shebang_for_shell(shell: &str) -> &str {
     }
 }
 
+// Holds all TUI state: the history lines, per-line selection flags,
+// the cursor position, and the current scroll offset.
 struct App {
     lines: Vec<String>,
     selected: Vec<bool>,
@@ -99,6 +107,7 @@ struct App {
 }
 
 impl App {
+    // Creates a new App with the cursor starting at the most recent (bottom) entry.
     fn new(lines: Vec<String>) -> Self {
         let len = lines.len();
         App {
@@ -147,6 +156,7 @@ impl App {
         }
     }
 
+    // Returns the subset of lines that have been checked, in order.
     fn selected_lines(&self) -> Vec<&str> {
         self.lines
             .iter()
@@ -156,6 +166,7 @@ impl App {
             .collect()
     }
 
+    // Adjusts scroll_offset so the cursor row is always within the visible window.
     fn ensure_cursor_visible(&mut self, visible_height: usize) {
         if visible_height == 0 {
             return;
@@ -168,8 +179,10 @@ impl App {
     }
 }
 
+// Main event loop. Draws the history list and status bar, handles keyboard input.
+// Returns Ok(true) when the user confirms (Enter), Ok(false) when they quit.
 fn run(terminal: &mut DefaultTerminal, app: &mut App, execute_mode: bool) -> io::Result<bool> {
-    // Initial scroll to bottom
+    // Scroll to the bottom so the most recent history is visible on launch.
     let size = terminal.size()?;
     let visible_height = size.height.saturating_sub(4) as usize; // borders + status bar
     if app.lines.len() > visible_height {
@@ -179,6 +192,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, execute_mode: bool) -> io:
     loop {
         terminal.draw(|frame| {
             let area = frame.area();
+            // Split the screen: scrollable list on top, one-line status bar on the bottom.
             let chunks = Layout::vertical([
                 Constraint::Min(1),
                 Constraint::Length(1),
@@ -190,12 +204,17 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, execute_mode: bool) -> io:
 
             app.ensure_cursor_visible(inner_height);
 
+            // Build the visible slice of lines as styled ratatui spans.
             let visible_lines: Vec<Line> = (app.scroll_offset
                 ..app.lines.len().min(app.scroll_offset + inner_height))
                 .map(|i| {
                     let checkbox = if app.selected[i] { "[x] " } else { "[ ] " };
                     let is_cursor = i == app.cursor;
 
+                    // Cursor + selected: dark background, green, bold.
+                    // Cursor only: dark background, bold.
+                    // Selected only: green.
+                    // Neither: default.
                     let style = if is_cursor && app.selected[i] {
                         Style::default()
                             .bg(Color::DarkGray)
@@ -229,6 +248,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App, execute_mode: bool) -> io:
 
             frame.render_widget(list_widget, list_area);
 
+            // Status bar: key binding hints, adapts label based on execute_mode.
             let status = Line::from(vec![
                 Span::styled(
                     " Space",
@@ -317,6 +337,7 @@ fn main() {
     let make_executable = args.iter().any(|a| a == "--make-executable" || a == "-m");
     let execute_mode = args.iter().any(|a| a == "--execute" || a == "-x");
 
+    // Parse -s/--shell <value> or --shell=<value>.
     let shell_override: Option<String> = {
         let mut val = None;
         let mut iter = args.iter().skip(1);
@@ -341,6 +362,7 @@ fn main() {
         }
     }
 
+    // Find the first non-flag, non-option-value positional argument as the output path.
     let output_path = {
         let mut val = None;
         let mut iter = args.iter().skip(1).peekable();
@@ -396,7 +418,7 @@ fn main() {
 
     let mut app = App::new(lines);
 
-    // Setup terminal
+    // Setup terminal: raw mode + alternate screen so we don't clobber the user's shell.
     terminal::enable_raw_mode().expect("failed to enable raw mode");
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen).expect("failed to enter alternate screen");
@@ -404,7 +426,7 @@ fn main() {
 
     let result = run(&mut terminal, &mut app, execute_mode);
 
-    // Restore terminal
+    // Restore the terminal before processing the result.
     ratatui::restore();
     execute!(io::stdout(), LeaveAlternateScreen).ok();
     terminal::disable_raw_mode().ok();
@@ -415,6 +437,7 @@ fn main() {
             if selected.is_empty() {
                 println!("No lines selected, nothing done.");
             } else if execute_mode {
+                // Run each selected command through the user's shell.
                 for cmd in &selected {
                     let status = process::Command::new(&shell)
                         .arg("-c")
@@ -431,6 +454,7 @@ fn main() {
                     }
                 }
             } else {
+                // Write selected commands to the output file with the appropriate shebang.
                 let output_path = output_path.unwrap();
                 let output_shell = shell_override.as_deref().unwrap_or(&shell);
                 let shebang = shebang_for_shell(output_shell);
