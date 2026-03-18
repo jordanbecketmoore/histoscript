@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
 use std::io;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process;
 
@@ -166,7 +167,7 @@ impl App {
     }
 }
 
-fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<bool> {
+fn run(terminal: &mut DefaultTerminal, app: &mut App, execute_mode: bool) -> io::Result<bool> {
     // Initial scroll to bottom
     let size = terminal.size()?;
     let visible_height = size.height.saturating_sub(4) as usize; // borders + status bar
@@ -234,7 +235,7 @@ fn run(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<bool> {
                 ),
                 Span::raw(": toggle  "),
                 Span::styled("Enter", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(": write script  "),
+                Span::raw(if execute_mode { ": run commands  " } else { ": write script  " }),
                 Span::styled("q", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw("/"),
                 Span::styled("Esc", Style::default().add_modifier(Modifier::BOLD)),
@@ -285,10 +286,15 @@ you want, and save them as an executable shell script with the correct
 shebang line. Supports bash, zsh, and fish.
 
 USAGE:
-    {program} <output-script>
+    {program} [OPTIONS] <output-script>
+    {program} -x
 
 ARGS:
-    <output-script>    Path for the generated shell script"
+    <output-script>    Path for the generated shell script (not used with -x)
+
+OPTIONS:
+    -m, --make-executable    chmod +x the output script after writing
+    -x, --execute            Run selected commands immediately instead of writing a script"
     );
 }
 
@@ -305,7 +311,15 @@ fn main() {
         println!("histoscript {}", env!("CARGO_PKG_VERSION"));
         process::exit(0);
     }
-    let output_path = &args[1];
+
+    let make_executable = args.iter().any(|a| a == "--make-executable" || a == "-m");
+    let execute_mode = args.iter().any(|a| a == "--execute" || a == "-x");
+    let output_path = args.iter().skip(1).find(|a| !a.starts_with('-'));
+
+    if !execute_mode && output_path.is_none() {
+        eprintln!("Error: missing <output-script> argument (or use -x to run commands directly)");
+        process::exit(1);
+    }
 
     let shell = detect_shell();
     if shell.is_empty() {
@@ -346,7 +360,7 @@ fn main() {
     execute!(stdout, EnterAlternateScreen).expect("failed to enter alternate screen");
     let mut terminal = ratatui::init();
 
-    let result = run(&mut terminal, &mut app);
+    let result = run(&mut terminal, &mut app, execute_mode);
 
     // Restore terminal
     ratatui::restore();
@@ -357,8 +371,25 @@ fn main() {
         Ok(true) => {
             let selected = app.selected_lines();
             if selected.is_empty() {
-                println!("No lines selected, nothing written.");
+                println!("No lines selected, nothing done.");
+            } else if execute_mode {
+                for cmd in &selected {
+                    let status = process::Command::new(&shell)
+                        .arg("-c")
+                        .arg(cmd)
+                        .status();
+                    match status {
+                        Ok(s) if !s.success() => {
+                            eprintln!("Command exited with status {s}: {cmd}");
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to run command '{cmd}': {e}");
+                        }
+                        _ => {}
+                    }
+                }
             } else {
+                let output_path = output_path.unwrap();
                 let shebang = shebang_for_shell(&shell);
                 let mut content = String::from(shebang);
                 content.push('\n');
@@ -368,11 +399,23 @@ fn main() {
                 }
                 match fs::write(output_path, &content) {
                     Ok(()) => {
-                        println!(
-                            "Wrote {} lines to {}",
-                            selected.len(),
-                            output_path
-                        );
+                        if make_executable {
+                            match fs::metadata(output_path) {
+                                Ok(meta) => {
+                                    let mut perms = meta.permissions();
+                                    perms.set_mode(perms.mode() | 0o111);
+                                    if let Err(e) = fs::set_permissions(output_path, perms) {
+                                        eprintln!("Error setting permissions on {output_path}: {e}");
+                                        process::exit(1);
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("Error reading metadata for {output_path}: {e}");
+                                    process::exit(1);
+                                }
+                            }
+                        }
+                        println!("Wrote {} lines to {}", selected.len(), output_path);
                     }
                     Err(e) => {
                         eprintln!("Error writing to {output_path}: {e}");
