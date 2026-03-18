@@ -84,6 +84,7 @@ fn parse_history_lines(history: &str, shell: &str) -> Vec<String> {
 
 fn shebang_for_shell(shell: &str) -> &str {
     match shell {
+        "sh" => "#!/bin/sh",
         "zsh" => "#!/bin/zsh",
         "fish" => "#!/usr/bin/env fish",
         _ => "#!/bin/bash",
@@ -293,6 +294,7 @@ ARGS:
     <output-script>    Path for the generated shell script (not used with -x)
 
 OPTIONS:
+    -s, --shell <shell>      Override the output script shell (sh, bash, zsh, fish)
     -m, --make-executable    chmod +x the output script after writing
     -x, --execute            Run selected commands immediately instead of writing a script"
     );
@@ -314,7 +316,47 @@ fn main() {
 
     let make_executable = args.iter().any(|a| a == "--make-executable" || a == "-m");
     let execute_mode = args.iter().any(|a| a == "--execute" || a == "-x");
-    let output_path = args.iter().skip(1).find(|a| !a.starts_with('-'));
+
+    let shell_override: Option<String> = {
+        let mut val = None;
+        let mut iter = args.iter().skip(1);
+        while let Some(arg) = iter.next() {
+            if arg == "-s" || arg == "--shell" {
+                val = iter.next().cloned();
+                break;
+            } else if let Some(v) = arg.strip_prefix("--shell=") {
+                val = Some(v.to_string());
+                break;
+            }
+        }
+        val
+    };
+    if let Some(ref s) = shell_override {
+        match s.as_str() {
+            "sh" | "bash" | "zsh" | "fish" => {}
+            other => {
+                eprintln!("Error: unsupported shell '{other}' for -s/--shell (supported: sh, bash, zsh, fish)");
+                process::exit(1);
+            }
+        }
+    }
+
+    let output_path = {
+        let mut val = None;
+        let mut iter = args.iter().skip(1).peekable();
+        while let Some(arg) = iter.next() {
+            if arg == "-s" || arg == "--shell" {
+                iter.next(); // skip the shell value
+                continue;
+            }
+            if arg.starts_with("--shell=") || arg.starts_with('-') {
+                continue;
+            }
+            val = Some(arg);
+            break;
+        }
+        val
+    };
 
     if !execute_mode && output_path.is_none() {
         eprintln!("Error: missing <output-script> argument (or use -x to run commands directly)");
@@ -390,7 +432,8 @@ fn main() {
                 }
             } else {
                 let output_path = output_path.unwrap();
-                let shebang = shebang_for_shell(&shell);
+                let output_shell = shell_override.as_deref().unwrap_or(&shell);
+                let shebang = shebang_for_shell(output_shell);
                 let mut content = String::from(shebang);
                 content.push('\n');
                 for line in &selected {
