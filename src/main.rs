@@ -413,7 +413,7 @@ fn main() {
         process::exit(if args.len() < 2 { 1 } else { 0 });
     }
     if args[1] == "-V" || args[1] == "--version" {
-        println!("histoscript {}", env!("CARGO_PKG_VERSION"));
+        println!("histoscript v{}", env!("CARGO_PKG_VERSION"));
         process::exit(0);
     }
 
